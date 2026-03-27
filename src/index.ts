@@ -309,9 +309,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           ? result.result
           : JSON.stringify(result.result);
       // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
-      const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+      let text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
       if (text) {
+        if (result.tokenUsage && result.tokenUsage.contextWindow > 0) {
+          const used = Math.round(result.tokenUsage.inputTokens / 1000);
+          const total = Math.round(result.tokenUsage.contextWindow / 1000);
+          text += `\n\n> ${used}k / ${total}k`;
+        }
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
       }

@@ -50,6 +50,10 @@ export interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  tokenUsage?: {
+    inputTokens: number;
+    contextWindow: number;
+  };
 }
 
 interface VolumeMount {
