@@ -463,16 +463,26 @@ async function runQuery(
       // Extract token usage from result message
       let tokenUsage: TokenUsage | undefined;
       const resultMsg = message as {
-        usage?: { input_tokens?: number };
-        modelUsage?: Record<string, { inputTokens?: number; contextWindow?: number }>;
+        usage?: {
+          input_tokens?: number;
+          cache_read_input_tokens?: number;
+          cache_creation_input_tokens?: number;
+        };
+        modelUsage?: Record<string, {
+          inputTokens?: number;
+          cacheReadInputTokens?: number;
+          cacheCreationInputTokens?: number;
+          contextWindow?: number;
+        }>;
       };
-      if (resultMsg.usage?.input_tokens) {
+      if (resultMsg.usage) {
+        const u = resultMsg.usage;
+        const totalInput = (u.input_tokens || 0)
+          + (u.cache_read_input_tokens || 0)
+          + (u.cache_creation_input_tokens || 0);
         const modelEntries = Object.values(resultMsg.modelUsage || {});
         const contextWindow = modelEntries[0]?.contextWindow || 0;
-        tokenUsage = {
-          inputTokens: resultMsg.usage.input_tokens,
-          contextWindow,
-        };
+        tokenUsage = { inputTokens: totalInput, contextWindow };
         log(`Token usage: ${tokenUsage.inputTokens} / ${tokenUsage.contextWindow}`);
       }
 
