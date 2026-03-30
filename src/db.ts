@@ -318,7 +318,7 @@ export function getNewMessages(
   jids: string[],
   lastTimestamp: string,
   botPrefix: string,
-  limit: number = 200,
+  limit: number = 50,
 ): { messages: NewMessage[]; newTimestamp: string } {
   if (jids.length === 0) return { messages: [], newTimestamp: lastTimestamp };
 
@@ -354,7 +354,7 @@ export function getMessagesSince(
   chatJid: string,
   sinceTimestamp: string,
   botPrefix: string,
-  limit: number = 200,
+  limit: number = 50,
 ): NewMessage[] {
   // Filter bot messages using both the is_bot_message flag AND the content
   // prefix as a backstop for messages written before the migration ran.

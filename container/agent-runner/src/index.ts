@@ -371,6 +371,7 @@ async function runQuery(
 
   let newSessionId: string | undefined;
   let lastAssistantUuid: string | undefined;
+  let lastAssistantInputTokens = 0;
   let messageCount = 0;
   let resultCount = 0;
 
@@ -443,6 +444,22 @@ async function runQuery(
 
     if (message.type === 'assistant' && 'uuid' in message) {
       lastAssistantUuid = (message as { uuid: string }).uuid;
+      // Track the last assistant message's usage — this represents actual context utilization
+      const assistantMsg = message as {
+        message?: {
+          usage?: {
+            input_tokens?: number;
+            cache_read_input_tokens?: number;
+            cache_creation_input_tokens?: number;
+          };
+        };
+      };
+      if (assistantMsg.message?.usage) {
+        const u = assistantMsg.message.usage;
+        lastAssistantInputTokens = (u.input_tokens || 0)
+          + (u.cache_read_input_tokens || 0)
+          + (u.cache_creation_input_tokens || 0);
+      }
     }
 
     if (message.type === 'system' && message.subtype === 'init') {
@@ -461,28 +478,18 @@ async function runQuery(
       log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
 
       // Extract token usage from result message
+      // Use lastAssistantInputTokens (from the final assistant message) for context utilization,
+      // not the cumulative result.usage which sums across all turns
       let tokenUsage: TokenUsage | undefined;
       const resultMsg = message as {
-        usage?: {
-          input_tokens?: number;
-          cache_read_input_tokens?: number;
-          cache_creation_input_tokens?: number;
-        };
         modelUsage?: Record<string, {
-          inputTokens?: number;
-          cacheReadInputTokens?: number;
-          cacheCreationInputTokens?: number;
           contextWindow?: number;
         }>;
       };
-      if (resultMsg.usage) {
-        const u = resultMsg.usage;
-        const totalInput = (u.input_tokens || 0)
-          + (u.cache_read_input_tokens || 0)
-          + (u.cache_creation_input_tokens || 0);
-        const modelEntries = Object.values(resultMsg.modelUsage || {});
-        const contextWindow = modelEntries[0]?.contextWindow || 0;
-        tokenUsage = { inputTokens: totalInput, contextWindow };
+      const modelEntries = Object.values(resultMsg.modelUsage || {});
+      const contextWindow = modelEntries[0]?.contextWindow || 0;
+      if (lastAssistantInputTokens > 0 || contextWindow > 0) {
+        tokenUsage = { inputTokens: lastAssistantInputTokens, contextWindow };
         log(`Token usage: ${tokenUsage.inputTokens} / ${tokenUsage.contextWindow}`);
       }
 
