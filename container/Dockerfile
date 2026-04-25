@@ -27,6 +27,12 @@ ARG BUN_VERSION=1.3.12
 # ---- System dependencies -----------------------------------------------------
 # tini: correct PID 1 / signal forwarding so outbound.db writes finalize on
 # SIGTERM instead of being orphaned by the shell entrypoint.
+#
+# Agent runtime tools (default-mysql-client, dnsutils, htop, iputils-ping, jq,
+# net-tools, netcat-openbsd, openssh-client, postgresql-client, python3 +
+# pip + venv) are preinstalled so per-session containers don't have to
+# re-install them on every spawn — containers are ephemeral. DB clients are
+# the client binaries only (no servers).
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
@@ -51,6 +57,18 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         git \
         tini \
         unzip \
+        default-mysql-client \
+        dnsutils \
+        htop \
+        iputils-ping \
+        jq \
+        net-tools \
+        netcat-openbsd \
+        openssh-client \
+        postgresql-client \
+        python3 \
+        python3-pip \
+        python3-venv \
     && if [ "$INSTALL_CJK_FONTS" = "true" ]; then \
         apt-get install -y --no-install-recommends fonts-noto-cjk; \
        fi \
