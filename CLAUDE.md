@@ -229,6 +229,7 @@ The agent container runs on **Bun**; the host runs on **Node** (pnpm). They comm
 - **Adding a Node CLI the agent invokes at runtime** (like `agent-browser`, `claude-code`, `vercel`) → put it in the Dockerfile's pnpm global-install block, pinned to an exact version via a new `ARG`. Don't use `bun install -g` — that bypasses the pnpm supply-chain policy.
 - **Changing the Dockerfile entrypoint or the dynamic-spawn command** (`src/container-runner.ts` line ~301) → keep `exec bun ...` so signals forward cleanly. The image has no `/app/dist`; don't reintroduce a tsc build step.
 - **Changing session-DB pragmas** (`container/agent-runner/src/db/connection.ts`) → `journal_mode=DELETE` is load-bearing for cross-mount visibility. Read the comment block at the top of the file first.
+- **Implementing manual `/compact`** → don't try. Investigated 2026-04-25 and rejected. The Claude SDK streaming-input protocol does not dispatch slash commands (only the interactive UI's React command bus does), and lowering `autoCompactWindow` / `CLAUDE_CODE_AUTO_COMPACT_WINDOW` to force auto-compact early doesn't help: the CLI binary clamps both to a hard floor of `1e5` (100,000 tokens) via `Math.max($f6, value)` — values below are silently raised. So `/compact` cannot trigger compaction for sessions under 100k tokens through any documented surface. Default auto-compact at 165k (set in `claude.ts`) is the only path; if a manual trigger is ever wanted, it has to be a DIY summarize-and-restart flow, not an SDK option.
 
 ## CJK font support
 
