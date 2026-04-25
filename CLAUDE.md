@@ -245,3 +245,22 @@ launchctl kickstart -k gui/$(id -u)/com.nanoclaw   # macOS
 ```
 
 `container/build.sh` reads `INSTALL_CJK_FONTS` from `.env` and passes it through as a Docker build-arg. Without CJK fonts, Chromium-rendered screenshots and PDFs containing CJK text show tofu (empty rectangles) instead of characters.
+
+## This Install (lukes-mini)
+
+- **Host:** Ubuntu 24.04, Intel J3160, 7.7 GB RAM, RAID1 SSD. SMB file server on `192.168.1.200` (LAN) and `100.73.66.125` (Tailscale). See `/home/luke/CLAUDE.md` on the host for system specs.
+- **Assistant name:** `Amy` (configured via per-group `container.json` `assistantName`; default upstream is `Andy`).
+- **Service:** systemd user unit at `~/.config/systemd/user/nanoclaw.service`. The `launchd/` dir in the repo is unused on this Linux host. Restart with `systemctl --user restart nanoclaw`. Logs at `logs/nanoclaw.log` and `logs/nanoclaw.error.log`.
+- **Credentials proxy:** OneCLI at `http://127.0.0.1:10254` (per `.env` `ONECLI_URL`).
+- **Mount allowlist (verify in v2):** v1 used `~/.config/nanoclaw/mount-allowlist.json` to permit `/home/luke` and `/srv/share`. Confirm whether v2 still uses this path or has changed the mechanism — see `src/modules/mount-security/` in v2.
+
+### Registered Discord groups
+
+Two agent groups are wired to Discord:
+
+| Discord channel ID | Folder | Display name | Trigger |
+|---|---|---|---|
+| `1487047476719390720` | `discord_main` | `amy-mini` | `@Amy` |
+| `1486635575262974154` | `discord_work` | `amy-work` | `@Amy` |
+
+Both mount `/home/luke` (ro) and `/srv/share` (rw). Per-group memory at `groups/<folder>/CLAUDE.md`; shared read-only at `groups/global/CLAUDE.md`.
