@@ -250,7 +250,7 @@ launchctl kickstart -k gui/$(id -u)/com.nanoclaw   # macOS
 
 - **Host:** Ubuntu 24.04, Intel J3160, 7.7 GB RAM, RAID1 SSD. SMB file server on `192.168.1.200` (LAN) and `100.73.66.125` (Tailscale). See `/home/luke/CLAUDE.md` on the host for system specs.
 - **Assistant name:** `Amy` (configured via per-group `container.json` `assistantName`; default upstream is `Andy`).
-- **Service:** systemd user unit at `~/.config/systemd/user/nanoclaw.service`. The `launchd/` dir in the repo is unused on this Linux host. Restart with `systemctl --user restart nanoclaw`. Logs at `logs/nanoclaw.log` and `logs/nanoclaw.error.log`.
+- **Service:** systemd user unit at `~/.config/systemd/user/nanoclaw-v2-6743aec4.service` (install-isolated; the hash suffix is per-install). The `launchd/` dir in the repo is unused on this Linux host. Restart with `systemctl --user restart nanoclaw-v2-6743aec4`. Logs at `logs/nanoclaw.log` and `logs/nanoclaw.error.log`. The pre-v2 generic `nanoclaw.service` was removed on 2026-04-25 — do not recreate it; both units would run in parallel and double-deliver every outbound message.
 - **Credentials proxy:** OneCLI at `http://127.0.0.1:10254` (per `.env` `ONECLI_URL`).
 - **Mount allowlist (verify in v2):** v1 used `~/.config/nanoclaw/mount-allowlist.json` to permit `/home/luke` and `/srv/share`. Confirm whether v2 still uses this path or has changed the mechanism — see `src/modules/mount-security/` in v2.
 
