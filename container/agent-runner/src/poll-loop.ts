@@ -387,6 +387,18 @@ async function processQuery(
         if (event.text) {
           dispatchResultText(event.text, routing);
         }
+
+        // Task lane: close the stream now. Each task batch is its own
+        // one-shot provider session, so there's nothing more to wait for
+        // — and without ending here, the SDK keeps the stream open just
+        // like chat, which would block the main loop indefinitely and
+        // starve any pending chat (or later task) messages. The chat
+        // lane keeps the stream alive on purpose; only the task lane
+        // closes on result.
+        if (lane === 'task') {
+          done = true;
+          query.end();
+        }
       }
     }
   } finally {
