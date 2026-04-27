@@ -315,6 +315,8 @@ async function processQuery(
       ? setInterval(() => {
           if (done) return;
 
+          const pending = getPendingMessages();
+
           // Skip system messages (MCP tool responses), /clear (needs fresh
           // query), and tasks (they belong to the task lane and must not
           // ride along on a chat continuation).
@@ -322,7 +324,7 @@ async function processQuery(
           // this session, the agent should see it. Per-thread sessions
           // already isolate threads into separate containers; shared
           // sessions intentionally merge everything.
-          const newMessages = getPendingMessages().filter((m) => {
+          const newMessages = pending.filter((m) => {
             if (m.kind === 'system') return false;
             if (m.kind === 'task') return false;
             if ((m.kind === 'chat' || m.kind === 'chat-sdk') && isClearCommand(m)) return false;
@@ -337,6 +339,19 @@ async function processQuery(
             query.push(prompt);
 
             markCompleted(newIds);
+          }
+
+          // If a task became due while we're holding the chat stream open,
+          // close the stream so the main loop returns and runs the task in
+          // its own (fresh) provider session. Claude SDK keeps the query
+          // alive across turns — without this, the chat query waits for
+          // more chat follow-ups and pending tasks starve indefinitely.
+          // The next chat message resumes via persisted continuation, so
+          // conversational context is preserved at the SDK level.
+          if (pending.some((m) => m.kind === 'task' && m.trigger === 1)) {
+            log('Pending task detected — ending chat query to release task lane');
+            done = true;
+            query.end();
           }
         }, ACTIVE_POLL_INTERVAL_MS)
       : null;
