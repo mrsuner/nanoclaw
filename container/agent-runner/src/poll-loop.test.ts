@@ -4,6 +4,7 @@ import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from '
 import { getPendingMessages, markCompleted } from './db/messages-in.js';
 import { getUndeliveredMessages } from './db/messages-out.js';
 import { formatMessages, extractRouting } from './formatter.js';
+import { selectLaneBatch } from './poll-loop.js';
 import { MockProvider } from './providers/mock.js';
 
 beforeEach(() => {
@@ -126,6 +127,45 @@ describe('accumulate gate (trigger column)', () => {
       .run();
     const [msg] = getPendingMessages();
     expect(msg.trigger).toBe(1);
+  });
+});
+
+describe('lane selection', () => {
+  it('chat-only batch with trigger=1 picks chat lane', () => {
+    insertMessage('m1', 'chat', { sender: 'A', text: 'hi' }, { trigger: 1 });
+    const sel = selectLaneBatch(getPendingMessages());
+    expect(sel?.lane).toBe('chat');
+    expect(sel?.batch.map((m) => m.id)).toEqual(['m1']);
+  });
+
+  it('task-only batch with trigger=1 picks task lane', () => {
+    insertMessage('m1', 'task', { prompt: 'review PRs' }, { trigger: 1 });
+    const sel = selectLaneBatch(getPendingMessages());
+    expect(sel?.lane).toBe('task');
+    expect(sel?.batch.map((m) => m.id)).toEqual(['m1']);
+  });
+
+  it('chat priority: chat trigger=1 wins over a pending task', () => {
+    insertMessage('m1', 'task', { prompt: 'do thing' }, { trigger: 1 });
+    insertMessage('m2', 'chat', { sender: 'A', text: 'hi' }, { trigger: 1 });
+    const sel = selectLaneBatch(getPendingMessages());
+    expect(sel?.lane).toBe('chat');
+    // Pending task stays out of the chat batch — runs in its own cycle.
+    expect(sel?.batch.map((m) => m.id)).toEqual(['m2']);
+  });
+
+  it('task lane runs only when chat has no wake-eligible message', () => {
+    insertMessage('m1', 'chat', { sender: 'A', text: 'context' }, { trigger: 0 });
+    insertMessage('m2', 'task', { prompt: 'go' }, { trigger: 1 });
+    const sel = selectLaneBatch(getPendingMessages());
+    expect(sel?.lane).toBe('task');
+    expect(sel?.batch.map((m) => m.id)).toEqual(['m2']);
+  });
+
+  it('returns null when neither lane has a trigger=1 message', () => {
+    insertMessage('m1', 'chat', { sender: 'A', text: 'noise' }, { trigger: 0 });
+    insertMessage('m2', 'task', { prompt: 'maybe later' }, { trigger: 0 });
+    expect(selectLaneBatch(getPendingMessages())).toBeNull();
   });
 });
 

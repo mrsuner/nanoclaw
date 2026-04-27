@@ -21,6 +21,45 @@ function generateId(): string {
   return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/**
+ * Execution lane for a batch.
+ *
+ * - `chat` — interactive conversation. Reuses the per-provider continuation
+ *   stored in session_state, supports follow-up pushes into the active
+ *   query, and handles `/clear`.
+ * - `task` — scheduled task run. Always starts fresh (no continuation in),
+ *   never persists continuation out, and refuses follow-up pushes so each
+ *   task batch is its own isolated provider session.
+ */
+export type Lane = 'chat' | 'task';
+
+function laneOf(msg: MessageInRow): Lane {
+  return msg.kind === 'task' ? 'task' : 'chat';
+}
+
+/**
+ * Pick the lane to process this cycle from the full pending set.
+ *
+ * Chat-priority: any chat message with trigger=1 wins over pending tasks,
+ * so interactive latency stays low. Tasks queued in the meantime stay
+ * pending and run on a later cycle — by design, since each task must be
+ * isolated from chat *and* from other tasks. Returns null when nothing
+ * in either lane is wake-eligible (caller sleeps).
+ */
+export function selectLaneBatch(
+  messages: MessageInRow[],
+): { lane: Lane; batch: MessageInRow[] } | null {
+  const chat: MessageInRow[] = [];
+  const task: MessageInRow[] = [];
+  for (const m of messages) {
+    if (laneOf(m) === 'task') task.push(m);
+    else chat.push(m);
+  }
+  if (chat.some((m) => m.trigger === 1)) return { lane: 'chat', batch: chat };
+  if (task.some((m) => m.trigger === 1)) return { lane: 'task', batch: task };
+  return null;
+}
+
 export interface PollLoopConfig {
   provider: AgentProvider;
   /**
@@ -64,31 +103,31 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
   let pollCount = 0;
   while (true) {
     // Skip system messages — they're responses for MCP tools (e.g., ask_user_question)
-    const messages = getPendingMessages().filter((m) => m.kind !== 'system');
+    const allPending = getPendingMessages().filter((m) => m.kind !== 'system');
     pollCount++;
 
     // Periodic heartbeat so we know the loop is alive
     if (pollCount % 30 === 0) {
-      log(`Poll heartbeat (${pollCount} iterations, ${messages.length} pending)`);
+      log(`Poll heartbeat (${pollCount} iterations, ${allPending.length} pending)`);
     }
 
-    if (messages.length === 0) {
+    if (allPending.length === 0) {
       await sleep(POLL_INTERVAL_MS);
       continue;
     }
 
-    // Accumulate gate: if the batch contains only trigger=0 rows
-    // (context-only, router-stored under ignored_message_policy='accumulate'),
-    // don't wake the agent. Leave them `pending` — they'll ride along the
-    // next time a real trigger=1 message lands via this same getPendingMessages
-    // query. Without this gate, a warm container keeps processing
-    // (and potentially responding to) every accumulate-only batch, defeating
-    // the "store as context, don't engage" contract. Host-side countDueMessages
-    // gates the same way for wake-from-cold (see src/db/session-db.ts).
-    if (!messages.some((m) => m.trigger === 1)) {
+    // Lane selection (chat-priority) + accumulate gate folded into one step.
+    // selectLaneBatch returns null when no message in either lane has
+    // trigger=1, which preserves the original "don't wake on context-only
+    // batches" contract — a cold container won't wake (host gate), a warm
+    // one won't run a turn here. trigger=0 rows in the chosen lane still
+    // ride along as context.
+    const selection = selectLaneBatch(allPending);
+    if (!selection) {
       await sleep(POLL_INTERVAL_MS);
       continue;
     }
+    const { lane, batch: messages } = selection;
 
     const ids = messages.map((m) => m.id);
     markProcessing(ids);
@@ -162,7 +201,10 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
 
     const query = config.provider.query({
       prompt,
-      continuation,
+      // Task lane runs fresh: no continuation in, none persisted out.
+      // Only the chat lane reads/writes the per-provider continuation,
+      // so chat history and scheduled-task runs never share a session.
+      continuation: lane === 'chat' ? continuation : undefined,
       cwd: config.cwd,
       systemContext: config.systemContext,
     });
@@ -171,8 +213,8 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     const skippedSet = new Set(skipped);
     const processingIds = ids.filter((id) => !commandIds.includes(id) && !skippedSet.has(id));
     try {
-      const result = await processQuery(query, routing, processingIds, config.providerName);
-      if (result.continuation && result.continuation !== continuation) {
+      const result = await processQuery(query, routing, processingIds, config.providerName, lane);
+      if (lane === 'chat' && result.continuation && result.continuation !== continuation) {
         continuation = result.continuation;
         setContinuation(config.providerName, continuation);
       }
@@ -182,8 +224,10 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
 
       // Stale/corrupt continuation recovery: ask the provider whether
       // this error means the stored continuation is unusable, and clear
-      // it so the next attempt starts fresh.
-      if (continuation && config.provider.isSessionInvalid(err)) {
+      // it so the next attempt starts fresh. Chat lane only — task
+      // queries pass `continuation: undefined`, so a stale-session
+      // error there can't be about our stored chat id.
+      if (lane === 'chat' && continuation && config.provider.isSessionInvalid(err)) {
         log(`Stale session detected (${continuation}) — clearing for next retry`);
         continuation = undefined;
         clearContinuation(config.providerName);
@@ -250,6 +294,7 @@ async function processQuery(
   routing: RoutingContext,
   initialBatchIds: string[],
   providerName: string,
+  lane: Lane,
 ): Promise<QueryResult> {
   let queryContinuation: string | undefined;
   let done = false;
@@ -260,32 +305,41 @@ async function processQuery(
   // Stream liveness is decided host-side via the heartbeat file + processing
   // claim age (see src/host-sweep.ts); if something is truly stuck, the host
   // will kill the container and messages get reset to pending.
-  const pollHandle = setInterval(() => {
-    if (done) return;
+  //
+  // Chat lane only. The task lane skips this entirely — each task batch is
+  // its own provider session and must not absorb later messages (chat or
+  // task) into the same live query. New messages that arrive during a task
+  // run stay pending and are picked up on the next cycle.
+  const pollHandle =
+    lane === 'chat'
+      ? setInterval(() => {
+          if (done) return;
 
-    // Skip system messages (MCP tool responses) and /clear (needs fresh query).
-    // Thread routing is the router's concern — if a message landed in this
-    // session, the agent should see it. Per-thread sessions already isolate
-    // threads into separate containers; shared sessions intentionally merge
-    // everything. Filtering on thread_id here caused deadlocks when the
-    // initial batch and follow-ups had mismatched thread_ids (e.g. a
-    // host-generated welcome trigger with null thread vs a Discord DM reply).
-    const newMessages = getPendingMessages().filter((m) => {
-      if (m.kind === 'system') return false;
-      if ((m.kind === 'chat' || m.kind === 'chat-sdk') && isClearCommand(m)) return false;
-      return true;
-    });
-    if (newMessages.length > 0) {
-      const newIds = newMessages.map((m) => m.id);
-      markProcessing(newIds);
+          // Skip system messages (MCP tool responses), /clear (needs fresh
+          // query), and tasks (they belong to the task lane and must not
+          // ride along on a chat continuation).
+          // Thread routing is the router's concern — if a message landed in
+          // this session, the agent should see it. Per-thread sessions
+          // already isolate threads into separate containers; shared
+          // sessions intentionally merge everything.
+          const newMessages = getPendingMessages().filter((m) => {
+            if (m.kind === 'system') return false;
+            if (m.kind === 'task') return false;
+            if ((m.kind === 'chat' || m.kind === 'chat-sdk') && isClearCommand(m)) return false;
+            return true;
+          });
+          if (newMessages.length > 0) {
+            const newIds = newMessages.map((m) => m.id);
+            markProcessing(newIds);
 
-      const prompt = formatMessages(newMessages);
-      log(`Pushing ${newMessages.length} follow-up message(s) into active query`);
-      query.push(prompt);
+            const prompt = formatMessages(newMessages);
+            log(`Pushing ${newMessages.length} follow-up message(s) into active query`);
+            query.push(prompt);
 
-      markCompleted(newIds);
-    }
-  }, ACTIVE_POLL_INTERVAL_MS);
+            markCompleted(newIds);
+          }
+        }, ACTIVE_POLL_INTERVAL_MS)
+      : null;
 
   try {
     for await (const event of query.events) {
@@ -300,7 +354,13 @@ async function processQuery(
         // container died between `init` and `result`, the SDK session was
         // effectively orphaned and the next message started a blank
         // Claude session with no prior context.
-        setContinuation(providerName, event.continuation);
+        //
+        // Chat lane only. Task runs are deliberately ephemeral — never
+        // persist a task session id, so the next task always starts fresh
+        // and the chat continuation is never overwritten by a task turn.
+        if (lane === 'chat') {
+          setContinuation(providerName, event.continuation);
+        }
       } else if (event.type === 'result') {
         // A result — with or without text — means the turn is done. Mark
         // the initial batch completed now so the host sweep doesn't see
@@ -316,7 +376,7 @@ async function processQuery(
     }
   } finally {
     done = true;
-    clearInterval(pollHandle);
+    if (pollHandle) clearInterval(pollHandle);
   }
 
   return { continuation: queryContinuation };
